@@ -334,9 +334,12 @@ internal static class Program
             return $"{held} until pid {pid}{name} exits{limit}";
         }
         if (opts.Timeout is int t)
-            return $"{held} for {FormatDuration(TimeSpan.FromSeconds(t))} (until {now.AddSeconds(t):HH:mm})";
+            return $"{held} for {FormatDuration(TimeSpan.FromSeconds(t))} (until {FormatTime(now.AddSeconds(t))})";
         return $"{held} until Ctrl+C";
     }
+
+    // 12-hour local wall-clock time, e.g. "3:47pm".
+    internal static string FormatTime(DateTime t) => t.ToString("h:mmtt").ToLowerInvariant();
 
     internal static string FormatDuration(TimeSpan t)
     {

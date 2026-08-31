@@ -39,8 +39,18 @@ public class StatusTests
     [Fact]
     public void Describe_Timeout_ShowsDurationAndEndTime()
     {
-        Assert.Equal("keeping the display awake for 1h 0m (until 13:00)",
+        Assert.Equal("keeping the display awake for 1h 0m (until 1:00pm)",
             Program.Describe(Parse("-d", "-t", "3600"), Noon));
+    }
+
+    [Theory]
+    [InlineData(9, 5, "9:05am")]
+    [InlineData(15, 47, "3:47pm")]
+    [InlineData(0, 30, "12:30am")]
+    [InlineData(12, 0, "12:00pm")]
+    public void FormatTime_TwelveHourLocal(int hour, int minute, string expected)
+    {
+        Assert.Equal(expected, Program.FormatTime(new DateTime(2026, 1, 1, hour, minute, 0)));
     }
 
     [Fact]
