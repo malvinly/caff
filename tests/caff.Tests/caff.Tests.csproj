@@ -14,7 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\src\caff.csproj" />
+    <ProjectReference Include="..\..\src\caff\caff.csproj" />
   </ItemGroup>
 
 </Project>
