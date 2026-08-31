@@ -96,7 +96,6 @@ internal static class Program
             return RunCommand(opts.Command);
         }
 
-        string? status = chatty ? HeldPhrase(opts) : null;
         var held = Stopwatch.StartNew();
         if (chatty)
         {
@@ -114,11 +113,11 @@ internal static class Program
         if (watched is not null)
         {
             using (watched)
-                result = WaitForProcess(watched, opts.Timeout, status);
+                result = WaitForProcess(watched, opts.Timeout, chatty);
         }
         else
         {
-            SleepFor(opts.Timeout, status);
+            SleepFor(opts.Timeout, chatty);
             result = 0;
         }
 
@@ -261,7 +260,7 @@ internal static class Program
     // up to ms and returns true when the wait target is done (e.g. the watched
     // process exited); it is called in 1-second slices while a status ticker is
     // showing, and in the largest slices the OS allows when silent.
-    private static void HoldLoop(int? timeoutSeconds, string? status, Func<int, bool> waitOne)
+    private static void HoldLoop(int? timeoutSeconds, bool ticker, Func<int, bool> waitOne)
     {
         var clock = Stopwatch.StartNew();
         long? totalMs = timeoutSeconds is int s ? s * 1000L : null;
@@ -270,25 +269,25 @@ internal static class Program
             long leftMs = totalMs is long t ? t - clock.ElapsedMilliseconds : long.MaxValue;
             if (leftMs <= 0)
                 return;
-            if (status is not null)
-                Tick(status, totalMs is null ? clock.Elapsed : TimeSpan.FromMilliseconds(leftMs), remaining: totalMs is not null);
-            if (waitOne((int)Math.Min(leftMs, status is not null ? 1000 : int.MaxValue)))
+            if (ticker)
+                Tick(totalMs is null ? clock.Elapsed : TimeSpan.FromMilliseconds(leftMs), remaining: totalMs is not null);
+            if (waitOne((int)Math.Min(leftMs, ticker ? 1000 : int.MaxValue)))
                 return;
         }
     }
 
-    private static void SleepFor(int? timeoutSeconds, string? status) =>
-        HoldLoop(timeoutSeconds, status, ms => { Thread.Sleep(ms); return false; });
+    private static void SleepFor(int? timeoutSeconds, bool ticker) =>
+        HoldLoop(timeoutSeconds, ticker, ms => { Thread.Sleep(ms); return false; });
 
-    private static int WaitForProcess(Process process, int? timeoutSeconds, string? status)
+    private static int WaitForProcess(Process process, int? timeoutSeconds, bool ticker)
     {
         try
         {
-            HoldLoop(timeoutSeconds, status, ms => process.WaitForExit(ms));
+            HoldLoop(timeoutSeconds, ticker, ms => process.WaitForExit(ms));
         }
         catch (Win32Exception e)
         {
-            if (status is not null)
+            if (ticker)
                 Console.Error.Write("\r\x1b[K");
             Console.Error.WriteLine($"caff: cannot wait for pid {process.Id}: {e.Message}");
             return 1;
@@ -355,12 +354,14 @@ internal static class Program
     private static void WriteStatusLine(string text) =>
         Console.Error.WriteLine($"\x1b[2m{StatusPrefix}{text}\x1b[0m");
 
-    // Rewrites the current terminal row in place. Truncated to the window width
-    // because \r only returns to the start of the current physical row - a
-    // wrapped line would leave its first row behind and scroll every second.
-    private static void Tick(string status, TimeSpan span, bool remaining)
+    // Rewrites the current terminal row in place. Just the countdown: the
+    // startup line directly above already says what is being held. Truncated to
+    // the window width because \r only returns to the start of the current
+    // physical row - a wrapped line would leave its first row behind and scroll
+    // every second.
+    private static void Tick(TimeSpan span, bool remaining)
     {
-        string text = $"{StatusPrefix}{status} ({Clock(span)} {(remaining ? "remaining" : "elapsed")})";
+        string text = $"{StatusPrefix}{Clock(span)} {(remaining ? "remaining" : "elapsed")}";
         int width = 80;
         try
         {
