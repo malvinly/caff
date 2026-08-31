@@ -178,6 +178,13 @@ public class ParseTests
     }
 
     [Fact]
+    public void EmptyCommand_Throws()
+    {
+        var e = Assert.Throws<ArgumentException>(() => Program.Parse([""]));
+        Assert.Contains("empty command", e.Message);
+    }
+
+    [Fact]
     public void SingleDash_IsACommand()
     {
         Assert.Equal(["-"], Program.Parse(["-"]).Command);

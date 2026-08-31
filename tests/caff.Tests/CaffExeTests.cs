@@ -161,9 +161,10 @@ public class CaffExeTests
     [Fact]
     public void CommandMode_ChildOutputIsPassedThrough()
     {
-        var (exitCode, stdout, _) = RunCaff("cmd", "/c", "echo hello");
+        var (exitCode, stdout, stderr) = RunCaff("cmd", "/c", "echo hello");
         Assert.Equal(0, exitCode);
         Assert.Equal("hello", stdout.Trim());
+        Assert.Equal("", stderr); // no status leakage into the child's stderr
     }
 
     [Fact]
@@ -206,8 +207,9 @@ public class CaffExeTests
         using var watched = StartInertProcess();
         try
         {
-            var (exitCode, _, _) = RunCaff("-w", watched.Id.ToString(), "-t", "1");
+            var (exitCode, _, stderr) = RunCaff("-w", watched.Id.ToString(), "-t", "1");
             Assert.Equal(0, exitCode);
+            Assert.Equal("", stderr); // no status leakage when redirected
             Assert.False(watched.HasExited); // caff left the process alone
         }
         finally

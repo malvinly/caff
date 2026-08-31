@@ -5,6 +5,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
+    <!-- Match the exe's globalization mode so formatting tests run as it ships. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>

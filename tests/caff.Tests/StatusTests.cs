@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Caff;
 using Xunit;
 
@@ -54,25 +53,31 @@ public class StatusTests
     }
 
     [Fact]
-    public void Describe_WaitPid_NonexistentProcess_OmitsName()
+    public void Describe_WaitPid_NoName_OmitsName()
     {
-        Assert.Equal("keeping the system awake until pid 999999999 exits",
-            Program.Describe(Parse("-w", "999999999"), Noon));
+        Assert.Equal("keeping the system awake until pid 4242 exits",
+            Program.Describe(Parse("-w", "4242"), Noon));
     }
 
     [Fact]
     public void Describe_WaitPid_IncludesProcessName()
     {
-        using var self = Process.GetCurrentProcess();
-        string line = Program.Describe(Parse("-w", self.Id.ToString()), Noon);
-        Assert.Contains($"until pid {self.Id} ({self.ProcessName}) exits", line);
+        Assert.Equal("keeping the system awake until pid 4242 (notepad) exits",
+            Program.Describe(Parse("-w", "4242"), Noon, "notepad"));
+    }
+
+    [Fact]
+    public void Describe_WaitPid_StripsControlCharactersFromName()
+    {
+        Assert.Equal("keeping the system awake until pid 4242 (evil) exits",
+            Program.Describe(Parse("-w", "4242"), Noon, "ev\x1b\til"));
     }
 
     [Fact]
     public void Describe_WaitPidWithTimeout_ShowsBoth()
     {
-        Assert.Equal("keeping the system awake until pid 999999999 exits (or for 30s)",
-            Program.Describe(Parse("-w", "999999999", "-t", "30"), Noon));
+        Assert.Equal("keeping the system awake until pid 4242 exits (or for 30s)",
+            Program.Describe(Parse("-w", "4242", "-t", "30"), Noon));
     }
 
     [Fact]
@@ -83,7 +88,9 @@ public class StatusTests
     }
 
     [Theory]
+    [InlineData(0, "0s")]
     [InlineData(5, "5s")]
+    [InlineData(60, "1m 0s")]
     [InlineData(90, "1m 30s")]
     [InlineData(3600, "1h 0m")]
     [InlineData(5430, "1h 30m")]
@@ -92,9 +99,16 @@ public class StatusTests
         Assert.Equal(expected, Program.FormatDuration(TimeSpan.FromSeconds(seconds)));
     }
 
+    [Fact]
+    public void FormatDuration_NegativeClampsToZero()
+    {
+        Assert.Equal("0s", Program.FormatDuration(TimeSpan.FromSeconds(-3)));
+    }
+
     [Theory]
     [InlineData(59, "0:59")]
     [InlineData(90, "1:30")]
+    [InlineData(3600, "1:00:00")]
     [InlineData(3661, "1:01:01")]
     public void Clock_Formats(int seconds, string expected)
     {

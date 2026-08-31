@@ -43,12 +43,38 @@ internal static class Program
             return 0;
         }
 
+        // Resolve a -w target up front: a bad pid should fail before any power
+        // request is created or status line printed, and resolving once means
+        // the name shown in the status line is the process actually waited on.
+        Process? watched = null;
+        string? watchedName = null;
+        if (opts.Command.Length == 0 && opts.WaitPid is int pid)
+        {
+            try
+            {
+                watched = Process.GetProcessById(pid);
+                try
+                {
+                    watchedName = watched.ProcessName;
+                }
+                catch (InvalidOperationException) // exited since the lookup
+                {
+                }
+            }
+            catch (ArgumentException)
+            {
+                Console.Error.WriteLine($"caff: no process with pid {pid}");
+                return 1;
+            }
+        }
+
         try
         {
             HoldPowerRequest(opts, BuildReason(args, opts));
         }
         catch (Exception e) when (e is Win32Exception or DllNotFoundException)
         {
+            watched?.Dispose();
             Console.Error.WriteLine($"caff: power request failed: {e.Message}");
             return 1;
         }
@@ -60,18 +86,35 @@ internal static class Program
         if (chatty)
         {
             EnableAnsi();
-            WriteStatusLine(Describe(opts, DateTime.Now));
+            WriteStatusLine(Describe(opts, DateTime.Now, watchedName));
         }
 
         if (opts.Command.Length > 0)
+        {
+            if (chatty)
+                RestoreConsole(); // the child owns the console from here
             return RunCommand(opts.Command);
+        }
 
         string? status = chatty ? HeldPhrase(opts) : null;
-        DateTime begin = DateTime.Now;
-        int result;
-        if (opts.WaitPid is int pid)
+        var held = Stopwatch.StartNew();
+        if (chatty)
         {
-            result = WaitForProcess(pid, opts.Timeout, status);
+            // Print the closing line and undo the console tweaks on Ctrl+C too;
+            // the default handler then terminates the process.
+            Console.CancelKeyPress += (_, _) =>
+            {
+                Console.Error.Write("\r\x1b[K");
+                WriteStatusLine($"released after {FormatDuration(held.Elapsed)}");
+                RestoreConsole();
+            };
+        }
+
+        int result;
+        if (watched is not null)
+        {
+            using (watched)
+                result = WaitForProcess(watched, opts.Timeout, status);
         }
         else
         {
@@ -82,7 +125,9 @@ internal static class Program
         if (chatty)
         {
             Console.Error.Write("\r\x1b[K"); // erase the ticker line
-            WriteStatusLine($"released after {FormatDuration(DateTime.Now - begin)}");
+            if (result == 0) // an error message, not "released", is the story on failure
+                WriteStatusLine($"released after {FormatDuration(held.Elapsed)}");
+            RestoreConsole();
         }
         return result;
     }
@@ -129,6 +174,8 @@ internal static class Program
             }
         }
         opts.Command = args[i..];
+        if (opts.Command.Length > 0 && opts.Command[0].Length == 0)
+            throw new ArgumentException("empty command");
         if (opts.Command.Length > 0)
         {
             // caffeinate ignores -t and -w when a command is given.
@@ -189,11 +236,6 @@ internal static class Program
 
     private static int RunCommand(string[] command)
     {
-        if (command[0].Length == 0)
-        {
-            Console.Error.WriteLine("caff: empty command");
-            return 1;
-        }
         var psi = new ProcessStartInfo(command[0]) { UseShellExecute = false };
         foreach (string arg in command[1..])
             psi.ArgumentList.Add(arg);
@@ -214,98 +256,49 @@ internal static class Program
         }
     }
 
-    // status is the phrase to tick with each second, or null to wait silently.
-    private static int WaitForProcess(int pid, int? timeoutSeconds, string? status)
+    // The single wait loop behind both -t and -w, Stopwatch-based so wall-clock
+    // and DST changes cannot stretch or shrink the hold. waitOne(ms) blocks for
+    // up to ms and returns true when the wait target is done (e.g. the watched
+    // process exited); it is called in 1-second slices while a status ticker is
+    // showing, and in the largest slices the OS allows when silent.
+    private static void HoldLoop(int? timeoutSeconds, string? status, Func<int, bool> waitOne)
     {
-        Process process;
+        var clock = Stopwatch.StartNew();
+        long? totalMs = timeoutSeconds is int s ? s * 1000L : null;
+        while (true)
+        {
+            long leftMs = totalMs is long t ? t - clock.ElapsedMilliseconds : long.MaxValue;
+            if (leftMs <= 0)
+                return;
+            if (status is not null)
+                Tick(status, totalMs is null ? clock.Elapsed : TimeSpan.FromMilliseconds(leftMs), remaining: totalMs is not null);
+            if (waitOne((int)Math.Min(leftMs, status is not null ? 1000 : int.MaxValue)))
+                return;
+        }
+    }
+
+    private static void SleepFor(int? timeoutSeconds, string? status) =>
+        HoldLoop(timeoutSeconds, status, ms => { Thread.Sleep(ms); return false; });
+
+    private static int WaitForProcess(Process process, int? timeoutSeconds, string? status)
+    {
         try
         {
-            process = Process.GetProcessById(pid);
-        }
-        catch (ArgumentException)
-        {
-            Console.Error.WriteLine($"caff: no process with pid {pid}");
-            return 1;
-        }
-        try
-        {
-            using (process)
-            {
-                if (status is not null)
-                {
-                    DateTime start = DateTime.Now;
-                    DateTime? deadline = timeoutSeconds is int s ? start.AddSeconds(s) : null;
-                    while (!process.WaitForExit(1000))
-                    {
-                        if (deadline is DateTime d)
-                        {
-                            TimeSpan left = d - DateTime.Now;
-                            if (left <= TimeSpan.Zero)
-                                break;
-                            Tick(status, left, remaining: true);
-                        }
-                        else
-                        {
-                            Tick(status, DateTime.Now - start, remaining: false);
-                        }
-                    }
-                }
-                else if (timeoutSeconds is int seconds)
-                {
-                    // WaitForExit takes at most int.MaxValue milliseconds, so wait in chunks.
-                    for (long remaining = seconds * 1000L; remaining > 0 && !process.HasExited; remaining -= int.MaxValue)
-                        process.WaitForExit((int)Math.Min(remaining, int.MaxValue));
-                }
-                else
-                {
-                    process.WaitForExit();
-                }
-            }
+            HoldLoop(timeoutSeconds, status, ms => process.WaitForExit(ms));
         }
         catch (Win32Exception e)
         {
-            Console.Error.WriteLine($"caff: cannot wait for pid {pid}: {e.Message}");
+            if (status is not null)
+                Console.Error.Write("\r\x1b[K");
+            Console.Error.WriteLine($"caff: cannot wait for pid {process.Id}: {e.Message}");
             return 1;
         }
         return 0;
     }
 
-    // status is the phrase to tick with each second, or null to sleep silently.
-    private static void SleepFor(int? timeoutSeconds, string? status)
-    {
-        if (status is not null)
-        {
-            DateTime start = DateTime.Now;
-            DateTime? deadline = timeoutSeconds is int s ? start.AddSeconds(s) : null;
-            while (true)
-            {
-                if (deadline is DateTime d)
-                {
-                    TimeSpan left = d - DateTime.Now;
-                    if (left <= TimeSpan.Zero)
-                        return;
-                    Tick(status, left, remaining: true);
-                    Thread.Sleep(left < TimeSpan.FromSeconds(1) ? left : TimeSpan.FromSeconds(1));
-                }
-                else
-                {
-                    Tick(status, DateTime.Now - start, remaining: false);
-                    Thread.Sleep(1000);
-                }
-            }
-        }
-        if (timeoutSeconds is not int seconds)
-        {
-            Thread.Sleep(Timeout.Infinite);
-            return;
-        }
-        // Thread.Sleep takes at most int.MaxValue milliseconds, so sleep in chunks.
-        for (long remaining = seconds * 1000L; remaining > 0; remaining -= int.MaxValue)
-            Thread.Sleep((int)Math.Min(remaining, int.MaxValue));
-    }
-
     // "keeping the system + display awake" etc.; mirrors the flag vocabulary so
-    // the status line doubles as confirmation of what was requested.
+    // the status line doubles as confirmation of what was requested. Parse
+    // guarantees at least one of Idle/Display is set (the default is -i).
     internal static string HeldPhrase(Options opts) => (opts.Idle, opts.Display) switch
     {
         (true, true) => "keeping the system + display awake",
@@ -313,23 +306,20 @@ internal static class Program
         _ => "keeping the display awake",
     };
 
-    // The full startup line, e.g. "keeping the display awake for 1h 0m (until 15:47)".
-    internal static string Describe(Options opts, DateTime now)
+    // The full startup line, e.g. "keeping the display awake for 1h 0m (until 3:47 PM)".
+    // Pure: the -w target's name is passed in by the caller that resolved it.
+    internal static string Describe(Options opts, DateTime now, string? waitProcessName = null)
     {
         string held = HeldPhrase(opts);
         if (opts.Command.Length > 0)
             return $"{held} while {opts.Command[0]} runs";
         if (opts.WaitPid is int pid)
         {
-            string name = "";
-            try
-            {
-                using var process = Process.GetProcessById(pid);
-                name = $" ({process.ProcessName})";
-            }
-            catch (Exception e) when (e is ArgumentException or InvalidOperationException)
-            {
-            }
+            // Strip control characters: the name is attacker-influenceable and
+            // this line goes to a VT-enabled terminal.
+            string name = string.IsNullOrEmpty(waitProcessName)
+                ? ""
+                : $" ({string.Concat(waitProcessName.Where(c => !char.IsControl(c)))})";
             string limit = opts.Timeout is int s ? $" (or for {FormatDuration(TimeSpan.FromSeconds(s))})" : "";
             return $"{held} until pid {pid}{name} exits{limit}";
         }
@@ -360,28 +350,70 @@ internal static class Program
             : $"{t.Minutes}:{t.Seconds:D2}";
     }
 
+    private const string StatusPrefix = "☕ caff: ";
+
     private static void WriteStatusLine(string text) =>
-        Console.Error.WriteLine($"\x1b[2m☕ caff: {text}\x1b[0m");
+        Console.Error.WriteLine($"\x1b[2m{StatusPrefix}{text}\x1b[0m");
 
-    // Rewrites the current terminal line in place (\r ... \x1b[K clears the tail).
-    private static void Tick(string status, TimeSpan span, bool remaining) =>
-        Console.Error.Write($"\r\x1b[2m☕ caff: {status} ({Clock(span)} {(remaining ? "remaining" : "elapsed")})\x1b[0m\x1b[K");
-
-    // Turns on ANSI escape processing for stderr; on by default in Windows
-    // Terminal, needed for classic conhost. Best effort: failure just means the
-    // escapes would show literally, and GetConsoleMode failing implies no real
-    // console anyway (in which case chatty mode is off).
-    private static void EnableAnsi()
+    // Rewrites the current terminal row in place. Truncated to the window width
+    // because \r only returns to the start of the current physical row - a
+    // wrapped line would leave its first row behind and scroll every second.
+    private static void Tick(string status, TimeSpan span, bool remaining)
     {
-        IntPtr handle = GetStdHandle(-12); // STD_ERROR_HANDLE
-        if (GetConsoleMode(handle, out uint mode))
-            SetConsoleMode(handle, mode | 0x0004); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        string text = $"{StatusPrefix}{status} ({Clock(span)} {(remaining ? "remaining" : "elapsed")})";
+        int width = 80;
         try
         {
-            Console.OutputEncoding = System.Text.Encoding.UTF8; // so the coffee cup renders
+            width = Console.WindowWidth;
         }
         catch (IOException)
         {
+        }
+        if (width > 2 && text.Length > width - 2)
+            text = text[..(width - 2)];
+        Console.Error.Write($"\r\x1b[2m{text}\x1b[0m\x1b[K");
+    }
+
+    // VT mode and the output code page belong to the console, which is shared
+    // with the parent shell and inherited by wrapped commands, so both tweaks
+    // are saved here and undone by RestoreConsole before caff hands the console
+    // back (child launch, exit, Ctrl+C).
+    private static uint savedConsoleMode;
+    private static bool consoleModeChanged;
+    private static System.Text.Encoding? savedEncoding;
+
+    private static void EnableAnsi()
+    {
+        IntPtr handle = GetStdHandle(-12); // STD_ERROR_HANDLE
+        if (GetConsoleMode(handle, out uint mode) && (mode & 0x0004) == 0)
+        {
+            savedConsoleMode = mode;
+            consoleModeChanged = SetConsoleMode(handle, mode | 0x0004); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        }
+        try
+        {
+            savedEncoding = Console.OutputEncoding;
+            Console.OutputEncoding = System.Text.Encoding.UTF8; // so the coffee cup renders
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
+        {
+            savedEncoding = null;
+        }
+    }
+
+    private static void RestoreConsole()
+    {
+        if (consoleModeChanged)
+            SetConsoleMode(GetStdHandle(-12), savedConsoleMode);
+        if (savedEncoding is not null)
+        {
+            try
+            {
+                Console.OutputEncoding = savedEncoding;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
+            {
+            }
         }
     }
 
