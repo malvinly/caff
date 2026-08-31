@@ -72,6 +72,34 @@ public class CaffExeTests
         Assert.Equal(0, exitCode);
         Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(0.9),
             $"exited after only {stopwatch.Elapsed}");
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10),
+            $"took {stopwatch.Elapsed} for a 1-second timeout");
+    }
+
+    [Fact]
+    public void TimeoutZero_HoldsForever()
+    {
+        // Matches caffeinate: -t 0 means no timeout, not "exit immediately".
+        using var caff = StartCaff("-t", "0");
+        try
+        {
+            Assert.False(caff.WaitForExit(2000), "caff -t 0 exited; it should hold indefinitely");
+        }
+        finally
+        {
+            caff.Kill(entireProcessTree: true);
+            caff.WaitForExit();
+        }
+    }
+
+    [Theory]
+    [InlineData("-d")]
+    [InlineData("-i")]
+    public void SingleAssertionFlag_RunsCleanly(string flag)
+    {
+        var (exitCode, _, stderr) = RunCaff(flag, "-t", "1");
+        Assert.Equal(0, exitCode);
+        Assert.Equal("", stderr);
     }
 
     [Fact]
@@ -112,10 +140,26 @@ public class CaffExeTests
     }
 
     [Fact]
+    public void CommandMode_EmptyCommand_ExitsOne()
+    {
+        var (exitCode, _, stderr) = RunCaff("");
+        Assert.Equal(1, exitCode);
+        Assert.Contains("empty command", stderr);
+    }
+
+    [Fact]
+    public void CommandMode_ChildOutputIsPassedThrough()
+    {
+        var (exitCode, stdout, _) = RunCaff("cmd", "/c", "echo hello");
+        Assert.Equal(0, exitCode);
+        Assert.Equal("hello", stdout.Trim());
+    }
+
+    [Fact]
     public void Wait_NonexistentPid_ExitsOne()
     {
-        // Windows pids are multiples of 4; this one is far above any real pid
-        // and not a multiple of 4, so it cannot exist.
+        // Far above anything Windows will have allocated in practice;
+        // Process.GetProcessById throws for it.
         var (exitCode, _, stderr) = RunCaff("-w", "999999999");
         Assert.Equal(1, exitCode);
         Assert.Contains("no process with pid", stderr);

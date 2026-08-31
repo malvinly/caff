@@ -9,7 +9,7 @@ public class ParseTests
     public void NoArgs_DefaultsToSystemRequest()
     {
         var opts = Program.Parse([]);
-        Assert.True(opts.System);
+        Assert.True(opts.Idle);
         Assert.False(opts.Display);
         Assert.Null(opts.Timeout);
         Assert.Null(opts.WaitPid);
@@ -22,14 +22,14 @@ public class ParseTests
     {
         var opts = Program.Parse(["-d"]);
         Assert.True(opts.Display);
-        Assert.False(opts.System);
+        Assert.False(opts.Idle);
     }
 
     [Fact]
-    public void SystemFlag()
+    public void IdleFlag()
     {
         var opts = Program.Parse(["-i"]);
-        Assert.True(opts.System);
+        Assert.True(opts.Idle);
         Assert.False(opts.Display);
     }
 
@@ -38,7 +38,7 @@ public class ParseTests
     {
         var opts = Program.Parse(["-di"]);
         Assert.True(opts.Display);
-        Assert.True(opts.System);
+        Assert.True(opts.Idle);
     }
 
     [Fact]
@@ -46,7 +46,7 @@ public class ParseTests
     {
         var opts = Program.Parse(["-d", "-i"]);
         Assert.True(opts.Display);
-        Assert.True(opts.System);
+        Assert.True(opts.Idle);
     }
 
     [Fact]
@@ -70,9 +70,10 @@ public class ParseTests
     }
 
     [Fact]
-    public void Timeout_ZeroIsAllowed()
+    public void Timeout_ZeroMeansNoTimeout()
     {
-        Assert.Equal(0, Program.Parse(["-t", "0"]).Timeout);
+        // caffeinate -t 0 holds forever (IOKit treats 0 as "no timeout").
+        Assert.Null(Program.Parse(["-t", "0"]).Timeout);
     }
 
     [Fact]
@@ -147,7 +148,7 @@ public class ParseTests
     {
         var opts = Program.Parse(["cmd", "/c", "echo"]);
         Assert.Equal(["cmd", "/c", "echo"], opts.Command);
-        Assert.True(opts.System); // default assertion still applies
+        Assert.True(opts.Idle); // default assertion still applies
     }
 
     [Fact]
@@ -173,7 +174,7 @@ public class ParseTests
         var opts = Program.Parse(["--", "-d"]);
         Assert.Equal(["-d"], opts.Command);
         Assert.False(opts.Display);
-        Assert.True(opts.System);
+        Assert.True(opts.Idle);
     }
 
     [Fact]
@@ -188,5 +189,34 @@ public class ParseTests
         var opts = Program.Parse(["-d", "cmd"]);
         Assert.True(opts.Display);
         Assert.Equal(["cmd"], opts.Command);
+    }
+
+    [Fact]
+    public void Reason_NoArgs()
+    {
+        Assert.Equal("caff", Program.BuildReason([], Program.Parse([])));
+    }
+
+    [Fact]
+    public void Reason_FlagsAreIncluded()
+    {
+        string[] args = ["-d", "-t", "5"];
+        Assert.Equal("caff -d -t 5", Program.BuildReason(args, Program.Parse(args)));
+    }
+
+    [Fact]
+    public void Reason_CommandArgumentsAreOmitted()
+    {
+        // Command arguments may contain secrets and must not leak into the
+        // system-wide power request reason string.
+        string[] args = ["-d", "git", "fetch", "--password=hunter2"];
+        Assert.Equal("caff -d git ...", Program.BuildReason(args, Program.Parse(args)));
+    }
+
+    [Fact]
+    public void Reason_BareCommandNameIsKept()
+    {
+        string[] args = ["notepad"];
+        Assert.Equal("caff notepad", Program.BuildReason(args, Program.Parse(args)));
     }
 }
