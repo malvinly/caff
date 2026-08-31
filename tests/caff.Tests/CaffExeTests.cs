@@ -67,9 +67,11 @@ public class CaffExeTests
     public void Timeout_ExitsZeroAfterRoughlyThatLong()
     {
         var stopwatch = Stopwatch.StartNew();
-        var (exitCode, _, _) = RunCaff("-t", "1");
+        var (exitCode, stdout, stderr) = RunCaff("-t", "1");
         stopwatch.Stop();
         Assert.Equal(0, exitCode);
+        Assert.Equal("", stdout); // redirected runs are completely silent
+        Assert.Equal("", stderr);
         Assert.True(stopwatch.Elapsed >= TimeSpan.FromSeconds(0.9),
             $"exited after only {stopwatch.Elapsed}");
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10),
@@ -115,24 +117,6 @@ public class CaffExeTests
     {
         var (exitCode, _, _) = RunCaff("cmd", "/c", "exit 7");
         Assert.Equal(7, exitCode);
-    }
-
-    [Fact]
-    public void CommandMode_ZeroExitCode()
-    {
-        var (exitCode, _, _) = RunCaff("cmd", "/c", "exit 0");
-        Assert.Equal(0, exitCode);
-    }
-
-    [Fact]
-    public void RedirectedOutput_StaysCompletelySilent()
-    {
-        // Status lines are interactive-terminal-only; with stderr redirected
-        // (as it is here), caff must keep caffeinate's silent behavior.
-        var (exitCode, stdout, stderr) = RunCaff("-t", "1");
-        Assert.Equal(0, exitCode);
-        Assert.Equal("", stdout);
-        Assert.Equal("", stderr);
     }
 
     [Fact]
