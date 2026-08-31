@@ -338,8 +338,8 @@ internal static class Program
         return $"{held} until Ctrl+C";
     }
 
-    // 12-hour local wall-clock time, e.g. "3:47pm".
-    internal static string FormatTime(DateTime t) => t.ToString("h:mmtt").ToLowerInvariant();
+    // 12-hour local wall-clock time, e.g. "3:47 PM".
+    internal static string FormatTime(DateTime t) => t.ToString("h:mm tt");
 
     internal static string FormatDuration(TimeSpan t)
     {
