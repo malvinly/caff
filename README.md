@@ -21,6 +21,14 @@ usage: caff [-di] [-t timeout] [-w pid] [command arguments...]
 
 With no timeout, pid, or command, caff holds the assertion until you Ctrl+C it. If both `-t` and `-w` are given, caff exits when either fires.
 
+In an interactive terminal, caff prints a dim status line to stderr showing what it is holding and a live countdown (or elapsed time), plus a closing "released" line:
+
+```
+☕ caff: keeping the display awake for 1h 0m (until 15:47)
+```
+
+When stderr is redirected (scripts, pipes, CI), caff is completely silent, matching `caffeinate`. stdout is never touched, so wrapped-command output and piping behave the same either way.
+
 Examples:
 
 ```

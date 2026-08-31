@@ -53,13 +53,38 @@ internal static class Program
             return 1;
         }
 
+        // Status lines go to stderr, and only when it is an interactive
+        // terminal, so scripts and redirected output keep caffeinate's
+        // silent behavior.
+        bool chatty = !Console.IsErrorRedirected;
+        if (chatty)
+        {
+            EnableAnsi();
+            WriteStatusLine(Describe(opts, DateTime.Now));
+        }
+
         if (opts.Command.Length > 0)
             return RunCommand(opts.Command);
-        if (opts.WaitPid is int pid)
-            return WaitForProcess(pid, opts.Timeout);
 
-        SleepFor(opts.Timeout);
-        return 0;
+        string? status = chatty ? HeldPhrase(opts) : null;
+        DateTime begin = DateTime.Now;
+        int result;
+        if (opts.WaitPid is int pid)
+        {
+            result = WaitForProcess(pid, opts.Timeout, status);
+        }
+        else
+        {
+            SleepFor(opts.Timeout, status);
+            result = 0;
+        }
+
+        if (chatty)
+        {
+            Console.Error.Write("\r\x1b[K"); // erase the ticker line
+            WriteStatusLine($"released after {FormatDuration(DateTime.Now - begin)}");
+        }
+        return result;
     }
 
     // BSD getopt style, like caffeinate: clustered flags (-di), attached (-t5) or
@@ -189,7 +214,8 @@ internal static class Program
         }
     }
 
-    private static int WaitForProcess(int pid, int? timeoutSeconds)
+    // status is the phrase to tick with each second, or null to wait silently.
+    private static int WaitForProcess(int pid, int? timeoutSeconds, string? status)
     {
         Process process;
         try
@@ -205,7 +231,26 @@ internal static class Program
         {
             using (process)
             {
-                if (timeoutSeconds is int seconds)
+                if (status is not null)
+                {
+                    DateTime start = DateTime.Now;
+                    DateTime? deadline = timeoutSeconds is int s ? start.AddSeconds(s) : null;
+                    while (!process.WaitForExit(1000))
+                    {
+                        if (deadline is DateTime d)
+                        {
+                            TimeSpan left = d - DateTime.Now;
+                            if (left <= TimeSpan.Zero)
+                                break;
+                            Tick(status, left, remaining: true);
+                        }
+                        else
+                        {
+                            Tick(status, DateTime.Now - start, remaining: false);
+                        }
+                    }
+                }
+                else if (timeoutSeconds is int seconds)
                 {
                     // WaitForExit takes at most int.MaxValue milliseconds, so wait in chunks.
                     for (long remaining = seconds * 1000L; remaining > 0 && !process.HasExited; remaining -= int.MaxValue)
@@ -225,8 +270,30 @@ internal static class Program
         return 0;
     }
 
-    private static void SleepFor(int? timeoutSeconds)
+    // status is the phrase to tick with each second, or null to sleep silently.
+    private static void SleepFor(int? timeoutSeconds, string? status)
     {
+        if (status is not null)
+        {
+            DateTime start = DateTime.Now;
+            DateTime? deadline = timeoutSeconds is int s ? start.AddSeconds(s) : null;
+            while (true)
+            {
+                if (deadline is DateTime d)
+                {
+                    TimeSpan left = d - DateTime.Now;
+                    if (left <= TimeSpan.Zero)
+                        return;
+                    Tick(status, left, remaining: true);
+                    Thread.Sleep(left < TimeSpan.FromSeconds(1) ? left : TimeSpan.FromSeconds(1));
+                }
+                else
+                {
+                    Tick(status, DateTime.Now - start, remaining: false);
+                    Thread.Sleep(1000);
+                }
+            }
+        }
         if (timeoutSeconds is not int seconds)
         {
             Thread.Sleep(Timeout.Infinite);
@@ -235,6 +302,84 @@ internal static class Program
         // Thread.Sleep takes at most int.MaxValue milliseconds, so sleep in chunks.
         for (long remaining = seconds * 1000L; remaining > 0; remaining -= int.MaxValue)
             Thread.Sleep((int)Math.Min(remaining, int.MaxValue));
+    }
+
+    // "keeping the system + display awake" etc.; mirrors the flag vocabulary so
+    // the status line doubles as confirmation of what was requested.
+    internal static string HeldPhrase(Options opts) => (opts.Idle, opts.Display) switch
+    {
+        (true, true) => "keeping the system + display awake",
+        (true, false) => "keeping the system awake",
+        _ => "keeping the display awake",
+    };
+
+    // The full startup line, e.g. "keeping the display awake for 1h 0m (until 15:47)".
+    internal static string Describe(Options opts, DateTime now)
+    {
+        string held = HeldPhrase(opts);
+        if (opts.Command.Length > 0)
+            return $"{held} while {opts.Command[0]} runs";
+        if (opts.WaitPid is int pid)
+        {
+            string name = "";
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                name = $" ({process.ProcessName})";
+            }
+            catch (Exception e) when (e is ArgumentException or InvalidOperationException)
+            {
+            }
+            string limit = opts.Timeout is int s ? $" (or for {FormatDuration(TimeSpan.FromSeconds(s))})" : "";
+            return $"{held} until pid {pid}{name} exits{limit}";
+        }
+        if (opts.Timeout is int t)
+            return $"{held} for {FormatDuration(TimeSpan.FromSeconds(t))} (until {now.AddSeconds(t):HH:mm})";
+        return $"{held} until Ctrl+C";
+    }
+
+    internal static string FormatDuration(TimeSpan t)
+    {
+        if (t.TotalHours >= 1)
+            return $"{(long)t.TotalHours}h {t.Minutes}m";
+        if (t.TotalMinutes >= 1)
+            return $"{(int)t.TotalMinutes}m {t.Seconds}s";
+        return $"{Math.Max(0, (int)t.TotalSeconds)}s";
+    }
+
+    // Compact h:mm:ss / m:ss for the once-a-second ticker.
+    internal static string Clock(TimeSpan t)
+    {
+        if (t < TimeSpan.Zero)
+            t = TimeSpan.Zero;
+        return t.TotalHours >= 1
+            ? $"{(long)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}"
+            : $"{t.Minutes}:{t.Seconds:D2}";
+    }
+
+    private static void WriteStatusLine(string text) =>
+        Console.Error.WriteLine($"\x1b[2m☕ caff: {text}\x1b[0m");
+
+    // Rewrites the current terminal line in place (\r ... \x1b[K clears the tail).
+    private static void Tick(string status, TimeSpan span, bool remaining) =>
+        Console.Error.Write($"\r\x1b[2m☕ caff: {status} ({Clock(span)} {(remaining ? "remaining" : "elapsed")})\x1b[0m\x1b[K");
+
+    // Turns on ANSI escape processing for stderr; on by default in Windows
+    // Terminal, needed for classic conhost. Best effort: failure just means the
+    // escapes would show literally, and GetConsoleMode failing implies no real
+    // console anyway (in which case chatty mode is off).
+    private static void EnableAnsi()
+    {
+        IntPtr handle = GetStdHandle(-12); // STD_ERROR_HANDLE
+        if (GetConsoleMode(handle, out uint mode))
+            SetConsoleMode(handle, mode | 0x0004); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        try
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8; // so the coffee cup renders
+        }
+        catch (IOException)
+        {
+        }
     }
 
     private const int PowerRequestDisplayRequired = 0;
@@ -255,4 +400,15 @@ internal static class Program
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PowerSetRequest(IntPtr powerRequest, int requestType);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int stdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetConsoleMode(IntPtr handle, uint mode);
 }

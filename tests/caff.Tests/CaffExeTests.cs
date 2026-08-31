@@ -125,6 +125,17 @@ public class CaffExeTests
     }
 
     [Fact]
+    public void RedirectedOutput_StaysCompletelySilent()
+    {
+        // Status lines are interactive-terminal-only; with stderr redirected
+        // (as it is here), caff must keep caffeinate's silent behavior.
+        var (exitCode, stdout, stderr) = RunCaff("-t", "1");
+        Assert.Equal(0, exitCode);
+        Assert.Equal("", stdout);
+        Assert.Equal("", stderr);
+    }
+
+    [Fact]
     public void CommandMode_AfterDoubleDash()
     {
         var (exitCode, _, _) = RunCaff("--", "cmd", "/c", "exit 3");
