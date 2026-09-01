@@ -69,11 +69,13 @@ public class ParseTests
         Assert.Equal(5, opts.Timeout);
     }
 
-    [Fact]
-    public void Timeout_ZeroMeansNoTimeout()
+    [Theory]
+    [InlineData("0")]
+    [InlineData("0s")]
+    public void Timeout_ZeroMeansNoTimeout(string value)
     {
         // caffeinate -t 0 holds forever (IOKit treats 0 as "no timeout").
-        Assert.Null(Program.Parse(["-t", "0"]).Timeout);
+        Assert.Null(Program.Parse(["-t", value]).Timeout);
     }
 
     [Fact]
@@ -83,11 +85,33 @@ public class ParseTests
     }
 
     [Theory]
+    [InlineData("2s", 2)]
+    [InlineData("5m", 300)]
+    [InlineData("7h", 25200)]
+    [InlineData("7h3m", 25380)]
+    [InlineData("3m5s", 185)]
+    [InlineData("5s3m", 185)]    // any order
+    [InlineData("1h1h", 7200)]   // repeats are summed
+    [InlineData("2147483647s", int.MaxValue)]
+    public void Timeout_UnitSuffixes(string value, int seconds)
+    {
+        Assert.Equal(seconds, Program.Parse(["-t", value]).Timeout);
+        Assert.Equal(seconds, Program.Parse(["-t" + value]).Timeout);
+    }
+
+    [Theory]
     [InlineData("-t")]           // missing argument
     [InlineData("-t", "abc")]    // not a number
     [InlineData("-t", "-5")]     // negative
+    [InlineData("-t", "+5")]     // sign is not allowed
+    [InlineData("-t", "")]       // empty
     [InlineData("-t", "2.5")]    // not an integer
     [InlineData("-t", "2147483648")] // overflows int
+    [InlineData("-t", "5x")]     // unknown unit
+    [InlineData("-t", "m5")]     // unit before number
+    [InlineData("-t", "3m5")]    // trailing number without unit
+    [InlineData("-t", "9999999999s")] // digit run overflows int
+    [InlineData("-t", "600000000h")]  // total overflows int
     public void Timeout_InvalidArguments_Throw(params string[] args)
     {
         Assert.Throws<ArgumentException>(() => Program.Parse(args));
@@ -109,6 +133,7 @@ public class ParseTests
     [InlineData("-w")]
     [InlineData("-w", "abc")]
     [InlineData("-w", "-1")]
+    [InlineData("-w", "5s")]     // unit suffixes are only for -t
     public void WaitPid_InvalidArguments_Throw(params string[] args)
     {
         Assert.Throws<ArgumentException>(() => Program.Parse(args));

@@ -5,6 +5,7 @@
 
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 
 namespace Caff;
@@ -160,7 +161,8 @@ internal static class Program
                         string? value = j + 1 < arg.Length ? arg[(j + 1)..] : i < args.Length ? args[i++] : null;
                         if (value is null)
                             throw new ArgumentException($"option -{c} requires an argument");
-                        if (!int.TryParse(value, out int n) || n < 0)
+                        int? n = c == 't' ? ParseTimeout(value) : ParseDigits(value);
+                        if (n is null)
                             throw new ArgumentException($"invalid -{c} argument: {value}");
                         if (c == 't') opts.Timeout = n; else opts.WaitPid = n;
                         // The rest of the cluster was the option's argument; this
@@ -182,12 +184,48 @@ internal static class Program
             opts.WaitPid = null;
         }
         // IOKit treats a zero assertion timeout as "no timeout", so caffeinate
-        // -t 0 holds forever; match that instead of exiting immediately.
+        // -t 0 holds forever; match that instead of exiting immediately. This
+        // also catches suffixed forms that sum to zero, like -t 0s or -t 0h0m.
         if (opts.Timeout == 0)
             opts.Timeout = null;
         if (!opts.Display && !opts.Idle)
             opts.Idle = true; // caffeinate defaults to preventing idle sleep.
         return opts;
+    }
+
+    // A non-negative int from ASCII digits only: no sign, whitespace, or
+    // culture-specific forms, since the raw argument is echoed in errors and
+    // in the powercfg reason string.
+    private static int? ParseDigits(string value) =>
+        int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int n) ? n : null;
+
+    // Seconds from a bare number ("3000") or from lowercase unit terms ("2s",
+    // "5m", "7h"). Terms may appear in any order and repeat; they are summed,
+    // so "7h3m", "3m7h", and "1h1h" are all accepted. Null on anything else,
+    // including overflow.
+    internal static int? ParseTimeout(string value)
+    {
+        if (value.Length == 0)
+            return null;
+        if (ParseDigits(value) is int seconds)
+            return seconds;
+        long total = 0;
+        int i = 0;
+        while (i < value.Length)
+        {
+            int start = i;
+            while (i < value.Length && char.IsAsciiDigit(value[i]))
+                i++;
+            if (i == start || i == value.Length || ParseDigits(value[start..i]) is not int n)
+                return null;
+            int unit = value[i++] switch { 's' => 1, 'm' => 60, 'h' => 3600, _ => 0 };
+            if (unit == 0)
+                return null;
+            total += (long)n * unit;
+            if (total > int.MaxValue)
+                return null;
+        }
+        return (int)total;
     }
 
     // The reason string shows up system-wide in `powercfg /requests` and in

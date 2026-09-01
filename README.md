@@ -14,7 +14,7 @@ usage: caff [-di] [-t timeout] [-w pid] [command arguments...]
 |------|--------|
 | `-d` | Prevent the display from sleeping |
 | `-i` | Prevent the system from idle sleeping (default if no flags are given) |
-| `-t <seconds>` | Hold the assertion for N seconds, then exit. `-t 0` means no timeout (hold forever), matching `caffeinate` |
+| `-t <timeout>` | Hold the assertion for this long, then exit. Seconds by default (`-t 3000`), or with lowercase `s`/`m`/`h` suffixes (`-t 90m`, `-t 1h30m`). The suffix form is a caff extension: macOS `caffeinate` does not understand it. `-t 0` (or `-t 0s`) means no timeout (hold forever), matching `caffeinate` |
 | `-w <pid>` | Hold the assertion until the given process exits |
 | `-h` | Print usage |
 | `command args...` | Run the command and hold the assertion until it exits; caff exits with the command's exit code. `-t` and `-w` are ignored in this mode, matching `caffeinate` |
@@ -33,6 +33,7 @@ Examples:
 
 ```
 caff -d -t 3600          # keep the display awake for an hour
+caff -d -t 1h            # same, using the suffix form (caff only)
 caff -w 4242             # keep the system awake until pid 4242 exits
 caff -di .\my-build.cmd  # keep system and display awake while a build runs
 ```
